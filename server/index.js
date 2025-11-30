@@ -1,10 +1,13 @@
 // server/index.js  (REPLACE your current file with this)
 const express = require('express');
+const cors = require('cors');               // <-- NEW
 const http = require('http');
 const { Server } = require('socket.io');
 const { Pool } = require('pg');
 
 const app = express();
+app.use(cors());                            // <-- NEW (enables CORS for HTTP endpoints)
+
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
