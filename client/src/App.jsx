@@ -48,20 +48,15 @@ export default function App(){
   }, [])
 
   const startRandom = ()=> socket.emit('random:find', { genderPref: 'any' })
-
   const sendMsg = (text)=>{
-    if(!room){
-      alert('Not connected to a chat room yet')
-      return
-    }
-    // optimistic UI add (so user sees message instantly)
-    const localMsg = { userId: socket.id, text, ts: Date.now() }
-    setMsgs(prev => [...prev, localMsg])
-
-    // send to server
-    socket.emit('chat:msg', { room, text })
+  if(!room){
+    alert('Not connected to a chat room yet')
+    return
   }
-
+  // send to server (server will emit 'chat:msg' back to all participants,
+  // including the sender, so the message is added once when received)
+  socket.emit('chat:msg', { room, text })
+  }
   return (
     <div style={{maxWidth:900, margin:'20px auto', fontFamily:'system-ui, sans-serif'}}>
       <h1>Strangerly — MVP</h1>
