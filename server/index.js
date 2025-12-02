@@ -1,18 +1,16 @@
 // server/index.js  (REPLACE your current file with this)
 const express = require('express');
-const cors = require('cors');               // <-- NEW
+const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 const { Pool } = require('pg');
 
 const app = express();
-app.use(cors());                            // <-- NEW (enables CORS for HTTP endpoints)
+app.use(cors()); // enable CORS for HTTP endpoints
+app.use(express.json()); // parse JSON for /report endpoint
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
-
-// parse JSON for /report endpoint
-app.use(express.json());
 
 // Postgres pool — optional for MVP
 const connectionString = process.env.DATABASE_URL || null;
@@ -145,7 +143,7 @@ io.on('connection', socket => {
   });
 
   socket.on('leave:room', ({ room }) => {
-    socket.leave(room);
+    try { socket.leave(room); } catch(e){}
     const u = online.get(socket.id); if (u) u.room = null;
     broadcastOnline();
   });
@@ -169,7 +167,9 @@ io.on('connection', socket => {
     const me = online.get(socket.id);
     if (!me) return;
     me.status = 'waiting';
-    const queue = waitingByGender[genderPref] || waitingByGender.any;
+    me.room = null;
+    waitingByGender[genderPref] = waitingByGender[genderPref] || waitingByGender.any;
+    const queue = waitingByGender[genderPref];
     let matchSocketId = null;
     while (queue.length) {
       const candidate = queue.shift();
@@ -198,6 +198,68 @@ io.on('connection', socket => {
       io.to(room).emit('random:matched', { room, participants: [socket.id, matchSocketId] });
       broadcastOnline();
     } else {
+      waitingByGender[genderPref].push(socket.id);
+      socket.emit('random:queued');
+      broadcastOnline();
+    }
+  });
+
+  // Skip current random chat and immediately find a new partner
+  socket.on('random:skip', async () => {
+    const me = online.get(socket.id);
+    if (!me) return;
+
+    const currentRoom = me.room;
+    // If in a room, notify partner and remove both from room
+    if (currentRoom) {
+      socket.to(currentRoom).emit('partner:left', { userId: socket.id });
+      try { socket.leave(currentRoom); } catch(e){}
+      const clients = await io.in(currentRoom).allSockets();
+      for (const sid of clients) {
+        const u = online.get(sid);
+        if (u) {
+          u.room = null;
+          u.status = 'idle';
+          io.to(sid).emit('partner:left', { userId: socket.id });
+        }
+      }
+    }
+
+    // put self into waiting and attempt to match immediately (same logic as random:find)
+    me.status = 'waiting';
+    me.room = null;
+
+    const genderPref = 'any';
+    waitingByGender[genderPref] = waitingByGender[genderPref] || waitingByGender.any;
+    const queue = waitingByGender[genderPref];
+
+    let matchSocketId = null;
+    while (queue.length) {
+      const candidate = queue.shift();
+      if (candidate !== socket.id && online.has(candidate) && online.get(candidate).status === 'waiting') {
+        matchSocketId = candidate;
+        break;
+      }
+    }
+
+    if (matchSocketId) {
+      const newRoom = `pair_${socket.id}_${matchSocketId}_${Date.now()}`;
+      socket.join(newRoom);
+      const otherSocket = io.sockets.sockets.get(matchSocketId);
+      otherSocket?.join(newRoom);
+      online.get(socket.id).status = 'chatting';
+      online.get(matchSocketId).status = 'chatting';
+      online.get(socket.id).room = newRoom;
+      online.get(matchSocketId).room = newRoom;
+
+      const history = await loadLastMessages(newRoom, 50);
+      socket.emit('chat:history', history);
+      otherSocket?.emit('chat:history', history);
+
+      io.to(newRoom).emit('random:matched', { room: newRoom, participants: [socket.id, matchSocketId] });
+      broadcastOnline();
+    } else {
+      // no match: push to queue
       waitingByGender[genderPref].push(socket.id);
       socket.emit('random:queued');
       broadcastOnline();
